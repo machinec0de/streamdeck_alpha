@@ -12,8 +12,10 @@
 
 import os
 import threading
+import json
+import sys
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 from StreamDeck.DeviceManager import DeviceManager
 from StreamDeck.ImageHelpers import PILHelper
 
@@ -23,88 +25,109 @@ pyautogui.PAUSE = 0.003
 pyautogui.FAILSAFE = False
 
 # Folder location of image assets used by this example.
-ASSETS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Daten\Buttons")
+ASSETS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Daten")
 
-# Read button labels and actions from file
-button_control = []
-with open ('Daten/button_control.txt', 'rt') as myfile:
-    for myline in myfile:
-        button_control.append(myline)
-button_control = [x.strip('\n') for x in button_control]
-button_control_parse = []
+# Global variables for paging
+current_page = 1
 
-# Set toggle switch for brightness-button
-brightness_switch = 1
-record_switch = 0
+# Read button configuration from JSON file
+button_config = {}
+try:
+    with open('Daten/button_config.json', 'r') as config_file:
+        button_config = json.load(config_file)
+        current_page = button_config.get('current_page', 1)
+except FileNotFoundError:
+    print("Error: button_config.json not found.")
+    exit(1)
+except json.JSONDecodeError:
+    print("Error: Invalid JSON format in button_config.json.")
+    exit(1)
 
-# Generates a custom tile with run-time generated text and custom image via the
-# PIL module.
-def render_key_image(deck, icon_filename, font_filename, label_text):
-    # Resize the source image asset to best-fit the dimensions of a single key,
-    # leaving a margin at the bottom so that we can draw the key title
-    # afterwards.
-    icon = Image.open(icon_filename)
-    image = PILHelper.create_scaled_image(deck, icon, margins=[0, 0, 5, 0])
+# Change to a new page
+def change_page(deck, new_page):
+    global current_page
+    
+    # Ensure page number is valid
+    total_pages = button_config.get('total_pages', 1)
+    if new_page < 1 or new_page > total_pages:
+        new_page = 1
+    
+    print(f"Changing to page {new_page}")
+    current_page = new_page
+    
+    # Update all button images for the new page
+    for key in range(deck.key_count()):
+        update_key_image(deck, key, False)
 
-    # Load a custom TrueType font and use it to overlay the key index, draw key
-    # label onto the image.
-    draw = ImageDraw.Draw(image)
-    font = ImageFont.truetype(font_filename, 14)
-    label_w, label_h = draw.textsize(label_text, font=font)
-    label_pos = ((image.width - label_w) // 2, image.height - 20)
-    draw.text(label_pos, text=label_text, font=font, fill="white")
+# Get current button configuration for a key
+def get_button_config_for_key(key_index):
+    # Add 1 to convert from 0-based to 1-based indexing
+    real_key_index = key_index + 1
+    
+    # Find the current page data
+    page_data = None
+    for page in button_config.get('pages', []):
+        if page.get('page_number') == current_page:
+            page_data = page
+            break
+    
+    if not page_data:
+        return None
+    
+    # Find the button on the current page
+    for button in page_data.get('buttons', []):
+        if button.get('index') == real_key_index:
+            return button
+    
+    return None
+
+# Generates a custom tile with an image via the PIL module.
+def render_key_image(deck, icon_filename):
+    # Resize the source image asset to best-fit the dimensions of a single key
+    try:
+        icon = Image.open(icon_filename)
+    except FileNotFoundError:
+        # Create a blank black image if the file doesn't exist
+        icon = Image.new('RGB', (72, 72), color=(0, 0, 0))
+            
+    image = PILHelper.create_scaled_image(deck, icon, margins=[0, 0, 0, 0])
 
     return PILHelper.to_native_format(deck, image)
 
 
 # Returns styling information for a key based on its position and state.
 def get_key_style(deck, key, state):
-    # Set exit button.
-    exit_key_index = 77
-
-    button_control_parse = button_control[key]              # prepare to split data in button_control.text
-    button_control_parse = button_control_parse.split('+')  # split data at "+"
-    button_labels = button_control_parse[0]                 # first entry up to "+" -> button-label
-
-    if button_control_parse[1] == "EXIT":
-        name = "exit"
-        icon = "{}.png".format("KEY{}p".format(key) if state else "KEY{}".format(key))
-        #icon = "{}.png".format("KEYp" if state else "KEY{}".format(key))
-        font = "Roboto-Regular.ttf"
-        label = "Bye" if state else "Exit"
+    # Get button configuration for this key
+    button_data = get_button_config_for_key(key)
+    
+    # If no configuration is found for this key
+    if not button_data:
+        return {
+            "name": str(key + 1),  # Display key + 1 (1-32 instead of 0-31)
+            "icon": os.path.join(ASSETS_PATH, f"KEY{current_page}-{key + 1}.png")  # Use page-specific numbering
+        }
+    
+    # For pressed state, always use KEY-pressed.png
+    if state:
+        icon = "KEY-pressed.png"
     else:
-        if button_control_parse[1] == "_toggle":
-            global record_switch
-            if record_switch == 1:
-                icon = "{}.png".format("KEY{}p".format(key) if state else "KEY{}_1".format(key))
-                record_switch = 0
-            else:
-                icon = "{}.png".format("KEY{}p".format(key) if state else "KEY{}_0".format(key))
-                record_switch = 1
-        else:
-            icon = "{}.png".format("KEY{}p".format(key) if state else "KEY{}".format(key))
-            #icon = "{}.png".format("KEYp" if state else "KEY{}".format(key))
-
-        name = key
-        font = "Roboto-Regular.ttf"
-        label = button_labels
+        icon = f"KEY{current_page}-{key + 1}.png"  # Use page-specific numbering
+    
+    name = str(key + 1)  # Display key + 1 (1-32 instead of 0-31)
 
     return {
         "name": name,
-        "icon": os.path.join(ASSETS_PATH, icon),
-        "font": os.path.join(ASSETS_PATH, font),
-        "label": label
+        "icon": os.path.join(ASSETS_PATH, icon)
     }
 
 
-# Creates a new key image based on the key index, style and current key state
-# and updates the image on the StreamDeck.
+# Creates a new key image based on the key index, style and current key state and updates the image on the StreamDeck.
 def update_key_image(deck, key, state):
-    # Determine what icon and label to use on the generated key.
+    # Determine what icon to use on the generated key.
     key_style = get_key_style(deck, key, state)
 
-    # Generate the custom key with the requested image and label.
-    image = render_key_image(deck, key_style["icon"], key_style["font"], key_style["label"])
+    # Generate the custom key with the requested image.
+    image = render_key_image(deck, key_style["icon"])
 
     # Use a scoped-with on the deck to ensure we're the only thread using it
     # right now.
@@ -113,13 +136,10 @@ def update_key_image(deck, key, state):
         deck.set_key_image(key, image)
 
 
-# Prints key state change information, updates rhe key image and performs any
-# associated actions when a key is pressed.
+# Prints key state change information, updates the key image and performs any associated actions when a key is pressed.
 def key_change_callback(deck, key, state):
-
-    # Print new key state
-    ### print("Deck {} Key {} = {}".format(deck.id(), key, state), flush=True)
-    print("Key {} = {}".format(key, state), flush=True)
+    # Display key + 1 (1-32 instead of 0-31)
+    print("Key {} = {} (Page {})".format(key + 1, state, current_page), flush=True)
     if state == False:
         print(" ")
 
@@ -128,40 +148,57 @@ def key_change_callback(deck, key, state):
 
     # Check if the key is changing to the pressed state.
     if state:
-        key_style = get_key_style(deck, key, state)
-
-        # When an exit button is pressed, close the application.
-        if key_style["name"] == "exit":
-            # Use a scoped-with on the deck to ensure we're the only thread
-            # using it right now.
+        # Get button configuration for this key
+        button_data = get_button_config_for_key(key)
+        
+        if not button_data:
+            return
+            
+        button_type = button_data.get('type', '')
+        
+        if button_type == "hotkey":
+            # Handle hotkey actions
+            keys = button_data.get('keys', [])
+            print("control hotkey, keys:", len(keys))
+            print("Executing hotkeys:", " + ".join(keys))
+            
+            # Press all keys
+            for key_name in keys:
+                pyautogui.keyDown(key_name)
+            
+            # Release all keys in reverse order
+            for key_name in reversed(keys):
+                pyautogui.keyUp(key_name)
+        
+        elif button_type == "action exit":
+            print("Exit button pressed, shutting down...")
+            # Make the StreamDeck go dark by setting all keys to black
+            black_image = PILHelper.to_native_format(
+                deck, 
+                PILHelper.create_scaled_image(
+                    deck, 
+                    Image.new('RGB', (72, 72), color=(0, 0, 0)), 
+                    margins=[0, 0, 0, 0]
+                )
+            )
             with deck:
-                # Reset deck, clearing all button images.
-                deck.reset()
-                # Close deck handle, terminating internal worker threads.
-                deck.close()
-        else:
-            print("button_control raw data: {}".format(button_control[key]))
-            button_control_parse = button_control[key]                  # prepare to split data in button_control.text
-            button_control_parse = button_control_parse.split('+')      # split data at "+"
+                # Clear all the keys
+                for key_index in range(deck.key_count()):
+                    deck.set_key_image(key_index, black_image)
+                
+                # Set brightness to 0
+                deck.set_brightness(0)
+            
+            # Close the current deck
+            deck.close()
+            # Exit the program
+            sys.exit(0)
+            
+        elif button_type == "action page":
+            # Handle page change
+            next_page = button_data.get('next_page', 1)
+            change_page(deck, next_page)
 
-            global brightness_switch                                    # set toggle-variable to global
-            if button_control_parse[1] == "_brightness":                # if action ist set to _brightness toggle between first and second value
-                print("control brightness")
-                if brightness_switch == 0:
-                    deck.set_brightness(int(button_control_parse[2]))
-                    brightness_switch = 1
-                else:
-                    deck.set_brightness(int(button_control_parse[3]))
-                    brightness_switch = 0
-            elif button_control_parse[1] == "_hotkey" or "_record":                   # use hotkey with up to 4 arguments
-                print("control hotkey, keys:", len(button_control_parse)-2)
-                for x in range(2, len(button_control_parse)):
-                    pyautogui.keyDown(button_control_parse[x])
-                    #print("_hotkey key-down:", button_control_parse[x])
-
-                for x in reversed(range(2, len(button_control_parse))):
-                    pyautogui.keyUp(button_control_parse[x])
-                    #print("_hotkey key-up:", button_control_parse[x])
 
 if __name__ == "__main__":
     streamdecks = DeviceManager().enumerate()
@@ -173,6 +210,7 @@ if __name__ == "__main__":
         deck.reset()
 
         print("Opened '{}' device (serial number: '{}')".format(deck.deck_type(), deck.get_serial_number()))
+        print(f"Current page: {current_page}")
         print(" ")
 
         # Set initial screen brightness.
