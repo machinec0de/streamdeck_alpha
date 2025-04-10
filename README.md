@@ -1,6 +1,7 @@
 # StreamDeck Controller
 
 Eine Python-Anwendung zur Steuerung deines Elgato Stream Deck mit konfigurierbaren Hotkeys und mehreren Seiten.
+
 Experimental-Branch:
 - Ergänzung eines GUIs
 
